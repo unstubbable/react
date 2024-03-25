@@ -805,6 +805,7 @@ function parseModelString(
             }
             return chunkValue;
           case PENDING:
+            return createLazyChunkWrapper(chunk);
           case BLOCKED:
           case CYCLIC:
             const parentChunk = initializingChunk;
