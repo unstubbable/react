@@ -421,7 +421,6 @@ function initializeModelChunk<T>(chunk: ResolvedModelChunk<T>): void {
       initializingChunkBlockedModel !== null &&
       initializingChunkBlockedModel.deps > 0
     ) {
-      initializingChunkBlockedModel.value = value;
       // We discovered new dependencies on modules that are not yet resolved.
       // We have to go the BLOCKED state until they're resolved.
       const blockedChunk: BlockedChunk<T> = (chunk: any);
@@ -577,10 +576,7 @@ function createModelResolver<T>(
       blocked.deps++;
     }
   } else {
-    blocked = initializingChunkBlockedModel = {
-      deps: cyclic ? 0 : 1,
-      value: (null: any),
-    };
+    blocked = initializingChunkBlockedModel = {deps: cyclic ? 0 : 1};
   }
   return value => {
     parentObject[key] = value;
@@ -592,9 +588,9 @@ function createModelResolver<T>(
       const resolveListeners = chunk.value;
       const initializedChunk: InitializedChunk<T> = (chunk: any);
       initializedChunk.status = INITIALIZED;
-      initializedChunk.value = blocked.value;
+      initializedChunk.value = value;
       if (resolveListeners !== null) {
-        wakeChunk(resolveListeners, blocked.value);
+        wakeChunk(resolveListeners, value);
       }
     }
   };
