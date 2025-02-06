@@ -380,6 +380,7 @@ export type Request = {
   writtenClientReferences: Map<ClientReferenceKey, number>,
   writtenServerReferences: Map<ServerReference<any>, number>,
   writtenObjects: WeakMap<Reference, string>,
+  referencedChunkIdsByChunkId: Map<number, Set<number>>,
   temporaryReferences: void | TemporaryReferenceSet,
   identifierPrefix: string,
   identifierCount: number,
@@ -492,6 +493,7 @@ function RequestInstance(
   this.writtenClientReferences = new Map();
   this.writtenServerReferences = new Map();
   this.writtenObjects = new WeakMap();
+  this.referencedChunkIdsByChunkId = new Map();
   this.temporaryReferences = temporaryReferences;
   this.identifierPrefix = identifierPrefix || '';
   this.identifierCount = 1;
@@ -534,6 +536,7 @@ function RequestInstance(
 
   const rootTask = createTask(
     this,
+    null,
     model,
     null,
     false,
@@ -612,13 +615,65 @@ export function resolveRequest(): null | Request {
   return null;
 }
 
+function getChunkIdFromReference(reference: string) {
+  return parseInt(reference.slice(1).split(':')[0], 16);
+}
+
+function getParentChunkId(
+  request: Request,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
+) {
+  const parentReference = request.writtenObjects.get(parent);
+
+  return parentReference ? getChunkIdFromReference(parentReference) : undefined;
+}
+
+function recordChunkReference(
+  request: Request,
+  referencingId: number,
+  referencedId: number,
+) {
+  let referencedIds = request.referencedChunkIdsByChunkId.get(referencingId);
+
+  if (!referencedIds) {
+    referencedIds = new Set();
+    request.referencedChunkIdsByChunkId.set(referencingId, referencedIds);
+  }
+
+  referencedIds.add(referencedId);
+}
+
+function isCrossChunkBackReference(
+  request: Request,
+  reference: string,
+  id: number,
+) {
+  const referencedId = getChunkIdFromReference(reference);
+
+  if (typeof referencedId === 'number' && referencedId !== id) {
+    const referencedIds = request.referencedChunkIdsByChunkId.get(referencedId);
+
+    if (referencedIds && referencedIds.has(id)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function serializeThenable(
   request: Request,
   task: Task,
   thenable: Thenable<any>,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
 ): number {
   const newTask = createTask(
     request,
+    parent,
     null,
     task.keyPath, // the server component sequence continues through Promise-as-a-child.
     task.implicitSlot,
@@ -717,6 +772,9 @@ function serializeReadableStream(
   request: Request,
   task: Task,
   stream: ReadableStream,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
 ): string {
   // Detect if this is a BYOB stream. BYOB streams should be able to be read as bytes on the
   // receiving side. It also implies that different chunks can be split up or merged as opposed
@@ -739,6 +797,7 @@ function serializeReadableStream(
   // This task won't actually be retried. We just use it to attempt synchronous renders.
   const streamTask = createTask(
     request,
+    parent,
     task.model,
     task.keyPath,
     task.implicitSlot,
@@ -819,6 +878,9 @@ function serializeAsyncIterable(
   task: Task,
   iterable: $AsyncIterable<ReactClientValue, ReactClientValue, void>,
   iterator: $AsyncIterator<ReactClientValue, ReactClientValue, void>,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
 ): string {
   // Generators/Iterators are Iterables but they're also their own iterator
   // functions. If that's the case, we treat them as single-shot. Otherwise,
@@ -829,6 +891,7 @@ function serializeAsyncIterable(
   // This task won't actually be retried. We just use it to attempt synchronous renders.
   const streamTask = createTask(
     request,
+    parent,
     task.model,
     task.keyPath,
     task.implicitSlot,
@@ -873,7 +936,7 @@ function serializeAsyncIterable(
         // Unlike streams, the last value may not be undefined. If it's not
         // we outline it and encode a reference to it in the closing instruction.
         try {
-          const chunkId = outlineModel(request, entry.value);
+          const chunkId = outlineModel(request, entry.value, parent);
           endStreamRow =
             streamTask.id.toString(16) +
             ':C' +
@@ -1205,6 +1268,9 @@ function renderFunctionComponent<Props>(
   Component: (p: Props, arg: void) => any,
   props: Props,
   validated: number, // DEV-only
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
 ): ReactJSONValue {
   // Reset the task's thenable state before continuing, so that if a later
   // component suspends we can reuse the same task object. If the same
@@ -1219,7 +1285,7 @@ function renderFunctionComponent<Props>(
     if (debugID === null) {
       // We don't have a chunk to assign debug info. We need to outline this
       // component to assign it an ID.
-      return outlineTask(request, task);
+      return outlineTask(request, task, parent);
     } else if (prevThenableState !== null) {
       // This is a replay and we've already emitted the debug info of this component
       // in the first pass. We skip emitting a duplicate line.
@@ -1424,6 +1490,9 @@ function renderFragment(
   request: Request,
   task: Task,
   children: $ReadOnlyArray<ReactClientValue>,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
 ): ReactJSONValue {
   if (__DEV__) {
     for (let i = 0; i < children.length; i++) {
@@ -1492,7 +1561,7 @@ function renderFragment(
       if (debugID === null) {
         // We don't have a chunk to assign debug info. We need to outline this
         // component to assign it an ID.
-        return outlineTask(request, task);
+        return outlineTask(request, task, parent);
       } else {
         // Forward any debug info we have the first time we see it.
         // We do this after init so that we have received all the debug info
@@ -1512,6 +1581,9 @@ function renderAsyncFragment(
   task: Task,
   children: $AsyncIterable<ReactClientValue, ReactClientValue, void>,
   getAsyncIterator: () => $AsyncIterator<any, any, any>,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
 ): ReactJSONValue {
   if (task.keyPath !== null) {
     // We have a Server Component that specifies a key but we're now splitting
@@ -1559,7 +1631,7 @@ function renderAsyncFragment(
   // be recursive serialization, we need to reset the keyPath and implicitSlot,
   // before recursing here.
   const asyncIterator = getAsyncIterator.call(children);
-  return serializeAsyncIterable(request, task, children, asyncIterator);
+  return serializeAsyncIterable(request, task, children, asyncIterator, parent);
 }
 
 function renderClientElement(
@@ -1618,9 +1690,16 @@ function renderClientElement(
 // The chunk ID we're currently rendering that we can assign debug data to.
 let debugID: null | number = null;
 
-function outlineTask(request: Request, task: Task): ReactJSONValue {
+function outlineTask(
+  request: Request,
+  task: Task,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
+): ReactJSONValue {
   const newTask = createTask(
     request,
+    parent,
     task.model, // the currently rendering element
     task.keyPath, // unlike outlineModel this one carries along context
     task.implicitSlot,
@@ -1667,6 +1746,9 @@ function renderElement(
   ref: mixed,
   props: any,
   validated: number, // DEV only
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
 ): ReactJSONValue {
   if (ref !== null && ref !== undefined) {
     // When the ref moves to the regular props object this will implicitly
@@ -1690,7 +1772,15 @@ function renderElement(
     !isOpaqueTemporaryReference(type)
   ) {
     // This is a Server Component.
-    return renderFunctionComponent(request, task, key, type, props, validated);
+    return renderFunctionComponent(
+      request,
+      task,
+      key,
+      type,
+      props,
+      validated,
+      parent,
+    );
   } else if (type === REACT_FRAGMENT_TYPE && key === null) {
     // For key-less fragments, we add a small optimization to avoid serializing
     // it as a wrapper.
@@ -1754,6 +1844,7 @@ function renderElement(
           ref,
           props,
           validated,
+          parent,
         );
       }
       case REACT_FORWARD_REF_TYPE: {
@@ -1764,6 +1855,7 @@ function renderElement(
           type.render,
           props,
           validated,
+          parent,
         );
       }
       case REACT_MEMO_TYPE: {
@@ -1775,6 +1867,7 @@ function renderElement(
           ref,
           props,
           validated,
+          parent,
         );
       }
       case REACT_ELEMENT_TYPE: {
@@ -1813,6 +1906,10 @@ function pingTask(request: Request, task: Task): void {
 
 function createTask(
   request: Request,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>
+    | null,
   model: ReactClientValue,
   keyPath: null | string,
   implicitSlot: boolean,
@@ -1823,6 +1920,12 @@ function createTask(
 ): Task {
   request.pendingChunks++;
   const id = request.nextChunkId++;
+  const parentId = parent && getParentChunkId(request, parent);
+
+  if (typeof parentId === 'number') {
+    recordChunkReference(request, parentId, id);
+  }
+
   if (typeof model === 'object' && model !== null) {
     // If we're about to write this into a new task we can assign it an ID early so that
     // any other references can refer to the value we're about to write.
@@ -1847,11 +1950,11 @@ function createTask(
       parentPropertyName: string,
       value: ReactClientValue,
     ): ReactJSONValue {
-      const parent = this;
+      const localParent = this;
       // Make sure that `parent[parentPropertyName]` wasn't JSONified before `value` was passed to us
       if (__DEV__) {
         // $FlowFixMe[incompatible-use]
-        const originalValue = parent[parentPropertyName];
+        const originalValue = localParent[parentPropertyName];
         if (
           typeof originalValue === 'object' &&
           originalValue !== value &&
@@ -1861,19 +1964,25 @@ function createTask(
           // for context.
           callWithDebugContextInDEV(request, task, () => {
             if (objectName(originalValue) !== 'Object') {
-              const jsxParentType = jsxChildrenParents.get(parent);
+              const jsxParentType = jsxChildrenParents.get(localParent);
               if (typeof jsxParentType === 'string') {
                 console.error(
                   '%s objects cannot be rendered as text children. Try formatting it using toString().%s',
                   objectName(originalValue),
-                  describeObjectForErrorMessage(parent, parentPropertyName),
+                  describeObjectForErrorMessage(
+                    localParent,
+                    parentPropertyName,
+                  ),
                 );
               } else {
                 console.error(
                   'Only plain objects can be passed to Client Components from Server Components. ' +
                     '%s objects are not supported.%s',
                   objectName(originalValue),
-                  describeObjectForErrorMessage(parent, parentPropertyName),
+                  describeObjectForErrorMessage(
+                    localParent,
+                    parentPropertyName,
+                  ),
                 );
               }
             } else {
@@ -1881,13 +1990,13 @@ function createTask(
                 'Only plain objects can be passed to Client Components from Server Components. ' +
                   'Objects with toJSON methods are not supported. Convert it manually ' +
                   'to a simple value before passing it to props.%s',
-                describeObjectForErrorMessage(parent, parentPropertyName),
+                describeObjectForErrorMessage(localParent, parentPropertyName),
               );
             }
           });
         }
       }
-      return renderModel(request, task, parent, parentPropertyName, value);
+      return renderModel(request, task, localParent, parentPropertyName, value);
     },
     thenableState: null,
   }: Omit<
@@ -2037,9 +2146,16 @@ function serializeClientReference(
   }
 }
 
-function outlineModel(request: Request, value: ReactClientValue): number {
+function outlineModel(
+  request: Request,
+  value: ReactClientValue,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
+): number {
   const newTask = createTask(
     request,
+    parent,
     value,
     null, // The way we use outlining is for reusing an object.
     false, // It makes no sense for that use case to be contextual.
@@ -2055,6 +2171,9 @@ function outlineModel(request: Request, value: ReactClientValue): number {
 function serializeServerReference(
   request: Request,
   serverReference: ServerReference<any>,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
 ): string {
   const writtenServerReferences = request.writtenServerReferences;
   const existingId = writtenServerReferences.get(serverReference);
@@ -2103,7 +2222,7 @@ function serializeServerReference(
           id,
           bound,
         };
-  const metadataId = outlineModel(request, serverReferenceMetadata);
+  const metadataId = outlineModel(request, serverReferenceMetadata, parent);
   writtenServerReferences.set(serverReference, metadataId);
   return serializeServerReferenceID(metadataId);
 }
@@ -2125,21 +2244,36 @@ function serializeLargeTextString(request: Request, text: string): string {
 function serializeMap(
   request: Request,
   map: Map<ReactClientValue, ReactClientValue>,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
 ): string {
   const entries = Array.from(map);
-  const id = outlineModel(request, entries);
+  const id = outlineModel(request, entries, parent);
   return '$Q' + id.toString(16);
 }
 
-function serializeFormData(request: Request, formData: FormData): string {
+function serializeFormData(
+  request: Request,
+  formData: FormData,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
+): string {
   const entries = Array.from(formData.entries());
-  const id = outlineModel(request, (entries: any));
+  const id = outlineModel(request, (entries: any), parent);
   return '$K' + id.toString(16);
 }
 
-function serializeSet(request: Request, set: Set<ReactClientValue>): string {
+function serializeSet(
+  request: Request,
+  set: Set<ReactClientValue>,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
+): string {
   const entries = Array.from(set);
-  const id = outlineModel(request, entries);
+  const id = outlineModel(request, entries, parent);
   return '$W' + id.toString(16);
 }
 
@@ -2194,8 +2328,11 @@ function serializeConsoleSet(
 function serializeIterator(
   request: Request,
   iterator: Iterator<ReactClientValue>,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
 ): string {
-  const id = outlineModel(request, Array.from(iterator));
+  const id = outlineModel(request, Array.from(iterator), parent);
   return '$i' + id.toString(16);
 }
 
@@ -2210,10 +2347,17 @@ function serializeTypedArray(
   return serializeByValueID(bufferId);
 }
 
-function serializeBlob(request: Request, blob: Blob): string {
+function serializeBlob(
+  request: Request,
+  blob: Blob,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
+): string {
   const model: Array<string | Uint8Array> = [blob.type];
   const newTask = createTask(
     request,
+    parent,
     model,
     null,
     false,
@@ -2343,6 +2487,7 @@ function renderModel(
         // Something suspended, we'll need to create a new task and resolve it later.
         const newTask = createTask(
           request,
+          parent,
           task.model,
           task.keyPath,
           task.implicitSlot,
@@ -2469,7 +2614,7 @@ function renderModelDestructive(
             if (debugID === null) {
               // We don't have a chunk to assign debug info. We need to outline this
               // component to assign it an ID.
-              return outlineTask(request, task);
+              return outlineTask(request, task, parent);
             } else {
               // Forward any debug info we have the first time we see it.
               forwardDebugInfo(request, debugID, debugInfo);
@@ -2507,6 +2652,7 @@ function renderModelDestructive(
           ref,
           props,
           __DEV__ && enableOwnerStacks ? element._store.validated : 0,
+          parent,
         );
         if (
           typeof newChild === 'object' &&
@@ -2549,7 +2695,7 @@ function renderModelDestructive(
             if (debugID === null) {
               // We don't have a chunk to assign debug info. We need to outline this
               // component to assign it an ID.
-              return outlineTask(request, task);
+              return outlineTask(request, task, parent);
             } else {
               // Forward any debug info we have the first time we see it.
               // We do this after init so that we have received all the debug info
@@ -2612,7 +2758,12 @@ function renderModelDestructive(
           // If we're in some kind of context we can't reuse the result of this render or
           // previous renders of this element. We only reuse Promises if they're not wrapped
           // by another Server Component.
-          const promiseId = serializeThenable(request, task, (value: any));
+          const promiseId = serializeThenable(
+            request,
+            task,
+            (value: any),
+            parent,
+          );
           return serializePromiseID(promiseId);
         } else if (modelRoot === value) {
           // This is the ID we're currently emitting so we need to write it
@@ -2625,7 +2776,7 @@ function renderModelDestructive(
       }
       // We assume that any object with a .then property is a "Thenable" type,
       // or a Promise type. Either of which can be represented by a Promise.
-      const promiseId = serializeThenable(request, task, (value: any));
+      const promiseId = serializeThenable(request, task, (value: any), parent);
       const promiseReference = serializePromiseID(promiseId);
       writtenObjects.set(value, promiseReference);
       return promiseReference;
@@ -2636,9 +2787,12 @@ function renderModelDestructive(
         // This is the ID we're currently emitting so we need to write it
         // once but if we discover it again, we refer to it by id.
         modelRoot = null;
-      } else {
-        // We've already emitted this as an outlined object, so we can
-        // just refer to that by its existing ID.
+      } else if (
+        !isCrossChunkBackReference(request, existingReference, task.id)
+      ) {
+        // We've already emitted this as an outlined object, so we can just
+        // refer to that by its existing ID, unless it would create a
+        // cross-chunk back reference.
         return existingReference;
       }
     } else if (parentPropertyName.indexOf(':') === -1) {
@@ -2672,21 +2826,21 @@ function renderModelDestructive(
     }
 
     if (isArray(value)) {
-      return renderFragment(request, task, value);
+      return renderFragment(request, task, value, parent);
     }
 
     if (value instanceof Map) {
-      return serializeMap(request, value);
+      return serializeMap(request, value, parent);
     }
     if (value instanceof Set) {
-      return serializeSet(request, value);
+      return serializeSet(request, value, parent);
     }
     // TODO: FormData is not available in old Node. Remove the typeof later.
     if (typeof FormData === 'function' && value instanceof FormData) {
-      return serializeFormData(request, value);
+      return serializeFormData(request, value, parent);
     }
     if (value instanceof Error) {
-      return serializeErrorValue(request, value);
+      return serializeErrorValue(request, value, parent);
     }
     if (value instanceof ArrayBuffer) {
       return serializeTypedArray(request, 'A', new Uint8Array(value));
@@ -2741,7 +2895,7 @@ function renderModelDestructive(
     }
     // TODO: Blob is not available in old Node. Remove the typeof check later.
     if (typeof Blob === 'function' && value instanceof Blob) {
-      return serializeBlob(request, value);
+      return serializeBlob(request, value, parent);
     }
 
     const iteratorFn = getIteratorFn(value);
@@ -2750,9 +2904,9 @@ function renderModelDestructive(
       const iterator = iteratorFn.call(value);
       if (iterator === value) {
         // Iterator, not Iterable
-        return serializeIterator(request, (iterator: any));
+        return serializeIterator(request, (iterator: any), parent);
       }
-      return renderFragment(request, task, Array.from((iterator: any)));
+      return renderFragment(request, task, Array.from((iterator: any)), parent);
     }
 
     // TODO: Blob is not available in old Node. Remove the typeof check later.
@@ -2760,13 +2914,19 @@ function renderModelDestructive(
       typeof ReadableStream === 'function' &&
       value instanceof ReadableStream
     ) {
-      return serializeReadableStream(request, task, value);
+      return serializeReadableStream(request, task, value, parent);
     }
     const getAsyncIterator: void | (() => $AsyncIterator<any, any, any>) =
       (value: any)[ASYNC_ITERATOR];
     if (typeof getAsyncIterator === 'function') {
       // We treat AsyncIterables as a Fragment and as such we might need to key them.
-      return renderAsyncFragment(request, task, (value: any), getAsyncIterator);
+      return renderAsyncFragment(
+        request,
+        task,
+        (value: any),
+        getAsyncIterator,
+        parent,
+      );
     }
 
     // We put the Date check low b/c most of the time Date's will already have been serialized
@@ -2873,7 +3033,7 @@ function renderModelDestructive(
       );
     }
     if (isServerReference(value)) {
-      return serializeServerReference(request, (value: any));
+      return serializeServerReference(request, (value: any), parent);
     }
     if (request.temporaryReferences !== undefined) {
       const tempRef = resolveTemporaryReference(
@@ -3093,7 +3253,13 @@ function emitPostponeChunk(
   request.completedErrorChunks.push(processedChunk);
 }
 
-function serializeErrorValue(request: Request, error: Error): string {
+function serializeErrorValue(
+  request: Request,
+  error: Error,
+  parent:
+    | {+[propertyName: string | number]: ReactClientValue}
+    | $ReadOnlyArray<ReactClientValue>,
+): string {
   if (__DEV__) {
     let name: string = 'Error';
     let message: string;
@@ -3115,7 +3281,7 @@ function serializeErrorValue(request: Request, error: Error): string {
       stack = [];
     }
     const errorInfo: ReactErrorInfoDev = {name, message, stack, env};
-    const id = outlineModel(request, errorInfo);
+    const id = outlineModel(request, errorInfo, parent);
     return '$Z' + id.toString(16);
   } else {
     // In prod we don't emit any information about this Error object to avoid
@@ -3513,10 +3679,10 @@ function renderConsoleValue(
     }
     // TODO: FormData is not available in old Node. Remove the typeof later.
     if (typeof FormData === 'function' && value instanceof FormData) {
-      return serializeFormData(request, value);
+      return serializeFormData(request, value, parent);
     }
     if (value instanceof Error) {
-      return serializeErrorValue(request, value);
+      return serializeErrorValue(request, value, parent);
     }
     if (value instanceof ArrayBuffer) {
       return serializeTypedArray(request, 'A', new Uint8Array(value));
@@ -3571,7 +3737,7 @@ function renderConsoleValue(
     }
     // TODO: Blob is not available in old Node. Remove the typeof check later.
     if (typeof Blob === 'function' && value instanceof Blob) {
-      return serializeBlob(request, value);
+      return serializeBlob(request, value, parent);
     }
 
     const iteratorFn = getIteratorFn(value);
