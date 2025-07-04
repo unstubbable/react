@@ -732,12 +732,14 @@ describe('ReactFlightDOMNode', () => {
     }
 
     function App() {
-      return (
-        <html>
-          <body>
-            <Component />
-          </body>
-        </html>
+      return ReactServer.createElement(
+        'html',
+        null,
+        ReactServer.createElement(
+          'body',
+          null,
+          ReactServer.createElement(Component, null),
+        ),
       );
     }
 
@@ -745,7 +747,7 @@ describe('ReactFlightDOMNode', () => {
       // destructure trick to avoid the act scope from awaiting the returned value
       return {
         pendingResult: ReactServerDOMStaticServer.unstable_prerender(
-          <App />,
+          ReactServer.createElement(App, null),
           webpackMap,
           {signal: serverAbortController.signal},
         ),
@@ -771,7 +773,7 @@ describe('ReactFlightDOMNode', () => {
     const clientAbortController = new AbortController();
 
     const fizzPrerenderStreamResult = ReactDOMFizzStatic.prerender(
-      <ClientRoot response={prerenderResponse} />,
+      React.createElement(ClientRoot, {response: prerenderResponse}),
       {
         signal: clientAbortController.signal,
         onError(error, errorInfo) {
@@ -806,7 +808,7 @@ describe('ReactFlightDOMNode', () => {
     }
 
     if (__DEV__) {
-      expect(normalizeCodeLocInfo(ownerStack)).toBe('\n    in Component');
+      expect(normalizeCodeLocInfo(ownerStack)).toBe('\n    in App (at **)');
     } else {
       expect(ownerStack).toBeNull();
     }
