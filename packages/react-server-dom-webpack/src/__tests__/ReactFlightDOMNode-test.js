@@ -711,4 +711,104 @@ describe('ReactFlightDOMNode', () => {
       expect(ownerStack).toBeNull();
     }
   });
+
+  // @gate enableHalt && enableAsyncDebugInfo
+  it('includes source locations in component and owner stacks for aborted components', async () => {
+    const serverAbortController = new AbortController();
+    let componentStack;
+    let ownerStack;
+
+    function abort() {
+      ownerStack = ReactServer.captureOwnerStack
+        ? ReactServer.captureOwnerStack()
+        : null;
+
+      serverAbortController.abort();
+    }
+
+    async function Component() {
+      abort();
+      return <div>Hello</div>;
+    }
+
+    function App() {
+      return (
+        <html>
+          <body>
+            <Component />
+          </body>
+        </html>
+      );
+    }
+
+    const {pendingResult} = await serverAct(async () => {
+      // destructure trick to avoid the act scope from awaiting the returned value
+      return {
+        pendingResult: ReactServerDOMStaticServer.unstable_prerender(
+          <App />,
+          webpackMap,
+          {signal: serverAbortController.signal},
+        ),
+      };
+    });
+
+    const {prelude} = await pendingResult;
+
+    function ClientRoot({response}) {
+      return use(response);
+    }
+
+    const prerenderResponse = ReactServerDOMClient.createFromReadableStream(
+      await createBufferedUnclosingStream(prelude),
+      {
+        serverConsumerManifest: {
+          moduleMap: null,
+          moduleLoading: null,
+        },
+      },
+    );
+
+    const clientAbortController = new AbortController();
+
+    const fizzPrerenderStreamResult = ReactDOMFizzStatic.prerender(
+      <ClientRoot response={prerenderResponse} />,
+      {
+        signal: clientAbortController.signal,
+        onError(error, errorInfo) {
+          componentStack = errorInfo.componentStack;
+        },
+      },
+    );
+
+    await await serverAct(
+      async () =>
+        new Promise(resolve => {
+          setImmediate(() => {
+            clientAbortController.abort();
+            resolve();
+          });
+        }),
+    );
+
+    const fizzPrerenderStream = await fizzPrerenderStreamResult;
+    const prerenderHTML = await readWebResult(fizzPrerenderStream.prelude);
+
+    expect(prerenderHTML).toContain('');
+
+    if (__DEV__) {
+      expect(normalizeCodeLocInfo(componentStack)).toBe(
+        '\n    in Component\n    in body\n    in html\n    in ClientRoot (at **)',
+      );
+    } else {
+      expect(normalizeCodeLocInfo(componentStack)).toBe(
+        '\n    in body\n    in html\n    in ClientRoot (at **)',
+      );
+    }
+
+    if (__DEV__) {
+      expect(normalizeCodeLocInfo(ownerStack)).toBe('\n    in Component');
+    } else {
+      expect(ownerStack).toBeNull();
+    }
+  });
 });
