@@ -713,7 +713,7 @@ describe('ReactFlightDOMNode', () => {
   });
 
   // @gate enableHalt && enableAsyncDebugInfo
-  it('includes source locations in component and owner stacks for aborted components', async () => {
+  it('includes source locations in component and owner stacks of aborted top-level components', async () => {
     const serverAbortController = new AbortController();
     let componentStack;
     let ownerStack;
@@ -726,28 +726,16 @@ describe('ReactFlightDOMNode', () => {
       serverAbortController.abort();
     }
 
-    async function Component() {
-      abort();
-      return <div>Hello</div>;
-    }
-
     function App() {
-      return ReactServer.createElement(
-        'html',
-        null,
-        ReactServer.createElement(
-          'body',
-          null,
-          ReactServer.createElement(Component, null),
-        ),
-      );
+      abort();
+      return null;
     }
 
     const {pendingResult} = await serverAct(async () => {
       // destructure trick to avoid the act scope from awaiting the returned value
       return {
         pendingResult: ReactServerDOMStaticServer.unstable_prerender(
-          ReactServer.createElement(App, null),
+          {root: ReactServer.createElement(App, null)},
           webpackMap,
           {signal: serverAbortController.signal},
         ),
@@ -757,7 +745,8 @@ describe('ReactFlightDOMNode', () => {
     const {prelude} = await pendingResult;
 
     function ClientRoot({response}) {
-      return use(response);
+      const {root} = use(response);
+      return root;
     }
 
     const prerenderResponse = ReactServerDOMClient.createFromReadableStream(
@@ -799,16 +788,18 @@ describe('ReactFlightDOMNode', () => {
 
     if (__DEV__) {
       expect(normalizeCodeLocInfo(componentStack)).toBe(
-        '\n    in Component\n    in body\n    in html\n    in ClientRoot (at **)',
+        '\n    in App\n    in ClientRoot (at **)',
       );
     } else {
       expect(normalizeCodeLocInfo(componentStack)).toBe(
-        '\n    in body\n    in html\n    in ClientRoot (at **)',
+        '\n    in ClientRoot (at **)',
       );
     }
 
     if (__DEV__) {
-      expect(normalizeCodeLocInfo(ownerStack)).toBe('\n    in App (at **)');
+      // TODO: Should this stack frame have a source location, or should it be
+      // omitted altogether?
+      expect(normalizeCodeLocInfo(ownerStack)).toBe('\n    in App');
     } else {
       expect(ownerStack).toBeNull();
     }
