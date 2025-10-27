@@ -524,21 +524,13 @@ function moveDebugInfoFromChunkToInnerValue<T>(
         debugInfo,
       );
     } else {
-      setDebugInfo(resolvedValue, debugInfo);
+      Object.defineProperty((resolvedValue: any), '_debugInfo', {
+        configurable: false,
+        enumerable: false,
+        writable: true,
+        value: debugInfo,
+      });
     }
-  }
-}
-
-function setDebugInfo(value: any, debugInfo: Array<ReactDebugInfoEntry>) {
-  // Only set if property is writable. If the value is a JSX element, it will be frozen.
-  const descriptor = Object.getOwnPropertyDescriptor(value, '_debugInfo');
-  if (!descriptor || descriptor.writable) {
-    Object.defineProperty(value, '_debugInfo', {
-      configurable: false,
-      enumerable: false,
-      writable: true,
-      value: debugInfo,
-    });
   }
 }
 
@@ -1227,7 +1219,12 @@ function initializeElement(
         // $FlowFixMe[method-unbinding]
         element._debugInfo.unshift.apply(element._debugInfo, debugInfo);
       } else {
-        setDebugInfo(element, debugInfo);
+        Object.defineProperty(element, '_debugInfo', {
+          configurable: false,
+          enumerable: false,
+          writable: true,
+          value: debugInfo,
+        });
       }
     }
   }
@@ -2800,7 +2797,12 @@ function addAsyncInfo(chunk: SomeChunk<any>, asyncInfo: ReactAsyncInfo): void {
       // $FlowFixMe[method-unbinding]
       value._debugInfo.push(asyncInfo);
     } else {
-      setDebugInfo(value, [asyncInfo]);
+      Object.defineProperty((value: any), '_debugInfo', {
+        configurable: false,
+        enumerable: false,
+        writable: true,
+        value: [asyncInfo],
+      });
     }
   } else {
     // $FlowFixMe[method-unbinding]

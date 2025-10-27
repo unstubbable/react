@@ -3885,11 +3885,11 @@ describe('ReactFlight', () => {
     );
   });
 
-  it('does not crash when exporting a JSX element as a client reference', async () => {
-    const ClientReference = clientReference(React.createElement('div'));
+  it('assigns debug info when rendering a JSX element as a client reference', async () => {
+    const clientReferenceElement = clientReference(<div></div>);
 
     function App() {
-      return ClientReference;
+      return clientReferenceElement;
     }
 
     const transport = ReactNoopFlightServer.render({
@@ -3900,7 +3900,17 @@ describe('ReactFlight', () => {
       const {root} = await ReactNoopFlightClient.read(transport);
       ReactNoop.render(root);
       if (__DEV__) {
-        expect(getDebugInfo(root)).toBeNull();
+        expect(getDebugInfo(root)).toEqual([
+          {time: 12},
+          {
+            env: 'Server',
+            key: null,
+            name: 'App',
+            props: {},
+            stack: '    in Object.<anonymous> (at **)',
+          },
+          {time: 13},
+        ]);
       }
     });
   });

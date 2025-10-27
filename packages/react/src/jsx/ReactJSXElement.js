@@ -273,8 +273,10 @@ function ReactElement(type, key, props, owner, debugStack, debugTask) {
       value: debugTask,
     });
     if (Object.freeze) {
+      // TODO: We should be freezing the element but currently, we might write
+      // into _debugInfo later. We could move it into _store which remains
+      // mutable.
       Object.freeze(element.props);
-      Object.freeze(element);
     }
   }
 
