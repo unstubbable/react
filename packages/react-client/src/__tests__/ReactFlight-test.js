@@ -3888,29 +3888,85 @@ describe('ReactFlight', () => {
   it('assigns debug info when rendering a JSX element as a client reference', async () => {
     const clientReferenceElement = clientReference(<div></div>);
 
-    function App() {
+    function Foo() {
+      return clientReferenceElement;
+    }
+
+    function Bar() {
       return clientReferenceElement;
     }
 
     const transport = ReactNoopFlightServer.render({
-      root: ReactServer.createElement(App),
+      foo: ReactServer.createElement(Foo),
+      bar: ReactServer.createElement(Bar),
     });
 
     await act(async () => {
-      const {root} = await ReactNoopFlightClient.read(transport);
-      ReactNoop.render(root);
+      const {foo, bar} = await ReactNoopFlightClient.read(transport);
+      ReactNoop.render(foo);
+      ReactNoop.render(bar);
       if (__DEV__) {
-        expect(getDebugInfo(root)).toEqual([
-          {time: 12},
-          {
-            env: 'Server',
-            key: null,
-            name: 'App',
-            props: {},
-            stack: '    in Object.<anonymous> (at **)',
-          },
-          {time: 13},
-        ]);
+        expect(getDebugInfo(foo)).toMatchInlineSnapshot(`
+          [
+            {
+              "time": 14,
+            },
+            {
+              "env": "Server",
+              "key": null,
+              "name": "Bar",
+              "props": {},
+              "stack": "    in Object.<anonymous> (at **)",
+            },
+            {
+              "time": 15,
+            },
+            {
+              "time": 12,
+            },
+            {
+              "env": "Server",
+              "key": null,
+              "name": "Foo",
+              "props": {},
+              "stack": "    in Object.<anonymous> (at **)",
+            },
+            {
+              "time": 13,
+            },
+          ]
+        `);
+
+        expect(getDebugInfo(bar)).toMatchInlineSnapshot(`
+          [
+            {
+              "time": 14,
+            },
+            {
+              "env": "Server",
+              "key": null,
+              "name": "Bar",
+              "props": {},
+              "stack": "    in Object.<anonymous> (at **)",
+            },
+            {
+              "time": 15,
+            },
+            {
+              "time": 12,
+            },
+            {
+              "env": "Server",
+              "key": null,
+              "name": "Foo",
+              "props": {},
+              "stack": "    in Object.<anonymous> (at **)",
+            },
+            {
+              "time": 13,
+            },
+          ]
+        `);
       }
     });
   });
