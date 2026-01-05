@@ -726,7 +726,7 @@ describe('ReactDOMFizzServerNode', () => {
       return 'Done';
     }
 
-    const {writable, output} = getTestWritable();
+    const {writable, output, completed} = getTestWritable();
 
     // Start render inside third-party AsyncLocalStorage context
     const {pipe} = thirdPartyStorage.run({type: 'test-context'}, () => {
@@ -743,16 +743,16 @@ describe('ReactDOMFizzServerNode', () => {
 
     // Wait for initial render to complete (shows fallback)
     await jest.runAllTimers();
+    expect(output.result).toContain('Loading');
 
     // Verify context was available during initial render
     expect(contextValueDuringRender).toEqual({type: 'test-context'});
 
     // Resolve the loading - this triggers pingTask which should preserve context
     hasLoaded = true;
-    await resolve();
+    resolve();
 
-    // Wait for React to re-render after promise resolution
-    await jest.runAllTimers();
+    await completed;
 
     // The key assertion: context should be preserved after suspension
     // Without the fix, this would be undefined because pingTask didn't

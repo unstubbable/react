@@ -1405,4 +1405,50 @@ describe('ReactFlightDOMNode', () => {
       }
     });
   });
+
+  it('should preserve third-party AsyncLocalStorage context in async server components', async () => {
+    const {AsyncLocalStorage} = require('async_hooks');
+    const thirdPartyStorage = new AsyncLocalStorage();
+
+    let resolve;
+    const promise = new Promise(r => (resolve = r));
+
+    let contextValueBeforeAwait = 'not-set';
+    let contextValueAfterAwait = 'not-set';
+
+    async function AsyncComponent() {
+      contextValueBeforeAwait = thirdPartyStorage.getStore();
+      await promise;
+      contextValueAfterAwait = thirdPartyStorage.getStore();
+      return 'Done';
+    }
+
+    function App() {
+      return ReactServer.createElement(AsyncComponent);
+    }
+
+    const stream = thirdPartyStorage.run({type: 'test-context'}, () => {
+      return ReactServerDOMServer.renderToPipeableStream(
+        ReactServer.createElement(App),
+        webpackMap,
+      );
+    });
+
+    const readable = new Stream.PassThrough(streamOptions);
+    stream.pipe(readable);
+
+    await Promise.resolve();
+
+    expect(contextValueBeforeAwait).toEqual({type: 'test-context'});
+
+    resolve();
+
+    const result = await ReactServerDOMClient.createFromNodeStream(readable, {
+      moduleMap: {},
+      moduleLoading: webpackModuleLoading,
+    });
+
+    expect(contextValueAfterAwait).toEqual({type: 'test-context'});
+    expect(result).toBe('Done');
+  });
 });
