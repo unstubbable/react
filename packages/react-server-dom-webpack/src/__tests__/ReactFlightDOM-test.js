@@ -3317,4 +3317,97 @@ describe('ReactFlightDOM', () => {
 
     // We expect it to get to the end here rather than hang on the reader.
   });
+
+  it('resolves the root before promise value chunks when stream has multiple pre-enqueued chunks', async () => {
+    // Render an object with a Suspense node and a promise. The Suspense symbol
+    // is outlined as a separate row before the root model, ensuring the root
+    // row is not the first chunk processed. This matters because the
+    // PromiseResolveThenableJob (from await) attaches listeners to the root
+    // before the root row arrives, triggering eager initialization and an early
+    // await continuation. The promise produces a $@ reference in the root
+    // model, with the resolved value arriving in a later row.
+    const {writable, readable} = getTestStream();
+    const {pipe} = await serverAct(() =>
+      ReactServerDOMServer.renderToPipeableStream(
+        {
+          node: <Suspense>hello</Suspense>,
+          promise: Promise.resolve('world'),
+        },
+        webpackMap,
+      ),
+    );
+    pipe(writable);
+
+    // Collect all chunks from the Flight stream
+    const reader = readable.getReader();
+    const allChunks = [];
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      allChunks.push(value);
+    }
+    const totalLength = allChunks.reduce((sum, c) => sum + c.byteLength, 0);
+    const fullBuffer = new Uint8Array(totalLength);
+    let offset = 0;
+    for (let i = 0; i < allChunks.length; i++) {
+      fullBuffer.set(allChunks[i], offset);
+      offset += allChunks[i].byteLength;
+    }
+
+    // Split the payload at each newline so each Flight row is a separate
+    // ReadableStream chunk. This simulates the "buffer and re-enqueue without
+    // concatenating" approach.
+    const rowChunks = [];
+    let start = 0;
+    for (let i = 0; i < fullBuffer.length; i++) {
+      if (fullBuffer[i] === 10) {
+        rowChunks.push(fullBuffer.slice(start, i + 1));
+        start = i + 1;
+      }
+    }
+    if (start < fullBuffer.length) {
+      rowChunks.push(fullBuffer.slice(start));
+    }
+    // We need at least 3 rows (Suspense symbol, root model, promise resolution)
+    expect(rowChunks.length).toBeGreaterThanOrEqual(3);
+
+    // Case 1: Multiple pre-enqueued chunks (one per row). The first chunk
+    // (Suspense symbol) is processed before the PromiseResolveThenableJob from
+    // await runs. By the time the root model row is processed, listeners are
+    // already attached, so the root initializes eagerly and the await
+    // continuation microtask runs BEFORE the promise value chunk is processed.
+    const multiChunkStream = new ReadableStream({
+      start(controller) {
+        for (let i = 0; i < rowChunks.length; i++) {
+          controller.enqueue(rowChunks[i]);
+        }
+        controller.close();
+      },
+    });
+    const multiChunkResult =
+      await ReactServerDOMClient.createFromReadableStream(multiChunkStream);
+    multiChunkResult.promise.then(() => {});
+    const multiChunkStatus = multiChunkResult.promise.status;
+
+    // Case 2: Single concatenated chunk. processBinaryChunk processes ALL rows
+    // synchronously, so the promise value row is resolved before the root
+    // model's listeners fire.
+    const singleChunkStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(fullBuffer);
+        controller.close();
+      },
+    });
+    const singleChunkResult =
+      await ReactServerDOMClient.createFromReadableStream(singleChunkStream);
+    singleChunkResult.promise.then(() => {});
+    const singleChunkStatus = singleChunkResult.promise.status;
+
+    // Single chunk: promise is already fulfilled when root resolves
+    expect(singleChunkStatus).toBe('fulfilled');
+
+    // Multi chunk: promise is still pending when root resolves because the
+    // await continuation runs before the next chunk is processed
+    expect(multiChunkStatus).toBe('pending');
+  });
 });
